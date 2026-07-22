@@ -105,6 +105,30 @@ def plot_convergence(full_df, agent_type, bar_type, metric="attendance"):
     plt.close()
 
 
+def plot_combined_convergence(full_df, combos, metric="attendance"):
+    """Plot the same metric's convergence for SEVERAL combos on one chart,
+    one line per combo, so they can be compared directly instead of
+    flipping between separate single-combo plots. This is the
+    "un-split" view: one figure per metric (not one per combo x metric).
+    """
+    plt.figure(figsize=(7, 5))
+    for agent_type, bar_type in combos:
+        sub = full_df[(full_df.agent_type == agent_type) & (full_df.bar_type == bar_type)]
+        sub = sub.sort_values("rounds")
+        label = f"{agent_type} + {bar_type}"
+        plt.errorbar(sub["rounds"], sub[f"{metric}_mean"], yerr=sub[f"{metric}_std"],
+                     marker="o", capsize=4, label=label)
+    plt.xscale("log")
+    plt.xlabel("Rounds (log scale)")
+    plt.ylabel(metric)
+    plt.title(f"{metric} vs. rounds, across game combinations")
+    plt.legend(fontsize=9)
+    plt.tight_layout()
+    fname = f"combined_convergence_{metric}.png"
+    plt.savefig(os.path.join(OUT_DIR, fname), dpi=150)
+    plt.close()
+
+
 if __name__ == "__main__":
     full_df = run_grid()
 
@@ -119,5 +143,10 @@ if __name__ == "__main__":
     for agent_type, bar_type in key_combos:
         for metric in ["attendance", "price", "profit", "welfare"]:
             plot_convergence(full_df, agent_type, bar_type, metric)
+
+    # Combined view: one plot per metric, all 4 key combos overlaid,
+    # instead of 16 separate small plots.
+    for metric in ["attendance", "price", "profit", "welfare"]:
+        plot_combined_convergence(full_df, key_combos, metric)
 
     print(f"\nAll CSVs and convergence plots saved to ./{OUT_DIR}/")
