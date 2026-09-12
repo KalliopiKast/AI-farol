@@ -30,6 +30,10 @@ class GameConfig:
     pi_min: float = -5.0    # minimum profit before "distress" / near-bankruptcy
     rounds: int = 300
     seed: int = 0
+    obs_subset_size: int = 3   # |S_i^t|: size of the subset of OTHER agents each
+                                # attending agent observes (Eq. 6, 11). Set to None
+                                # to fall back to the aggregate-only private-history
+                                # regime (agent sees true K_t on nights it attends).
 
 
 def satisfaction(K, cfg: GameConfig):

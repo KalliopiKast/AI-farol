@@ -4,15 +4,26 @@ Agent-side learning mechanisms for the AI-Farol model (Section 3.2).
 
 All agents share the interface:
     decide(t, price) -> int (0 or 1)
-    observe(t, price, K_t, attended) -> None
+    observe(t, price, K_t, attended, subset_estimate=None) -> None
 
-PARTIAL OBSERVABILITY is implemented literally as in the paper: an agent
-only records a data point (K_t, price_t) in its PRIVATE history for
-periods in which it attended (a_i^t = 1). Agents that never attend never
-learn anything about attendance levels from this channel. This creates
-the selection bias flagged explicitly in Section 3.2 ("agent i has
-observations only for periods in which they attended, potentially
-introducing selection bias").
+PARTIAL OBSERVABILITY (Eq. 6, 11) is implemented literally: when an agent
+attends, it does NOT get handed the true aggregate K_t. Instead, the
+simulation loop (simulation.py) samples a fixed-size subset S_i^t of the
+*other* agents, tells attending agent i only how many of that subset
+attended, and the agent forms an unbiased rescaled estimate of total
+attendance from that subset count (`subset_estimate`, computed in
+simulation.py and passed in here). Agents that never attend receive
+nothing on this channel at all -- this is the selection bias flagged in
+Section 3.2 ("agent i has observations only for periods in which they
+attended, potentially introducing selection bias"), now compounded with
+genuine within-period partial information (a subset, not the true count)
+even in periods the agent DID attend.
+
+If the simulation does not pass a subset_estimate (e.g. cfg.obs_subset_size
+is unset, or the caller is running the legacy/simplified regime), the
+private channel falls back to recording the true K_t -- this keeps
+backward compatibility but is the weaker, aggregate-only notion of
+partial observability the original implementation used.
 
 A separate PUBLIC-DISCLOSURE channel is available for learning algorithms
 that need full feedback to function (no-regret, Q-learning): it represents
@@ -20,9 +31,13 @@ a bar that publishes aggregate attendance after the fact (e.g. a
 next-day announcement), independent of the real-time partial observation
 during the visit itself. This is a modeling choice, made explicit here so
 it can be toggled off (`use_public_feedback=False`) to isolate the effect
-of pure selection-biased, private-history learning -- e.g. to reproduce
-the classical partial-observability regime for the HeuristicMemoryAgent
-and BayesianAgent.
+of pure selection-biased, subset-based learning -- the classical
+partial-observability regime intended for HeuristicMemoryAgent and
+BayesianAgent. NOTE: unlike earlier drafts of this file, `use_public_feedback`
+now defaults to False at the BaseAgent level; NoRegretAgent and
+QLearningAgent explicitly opt back into public feedback in their own
+__init__, since their counterfactual-strategy evaluation structurally
+requires the realized K_t (see class docstrings below).
 """
 
 import numpy as np
@@ -30,23 +45,28 @@ from model import satisfaction
 
 
 class BaseAgent:
-    def __init__(self, agent_id, cfg, use_public_feedback=True, rng=None):
+    def __init__(self, agent_id, cfg, use_public_feedback=False, rng=None):
         self.id = agent_id
         self.cfg = cfg
         self.use_public_feedback = use_public_feedback
         self.rng = rng or np.random.default_rng()
-        self.private_history = []   # (t, K_t, price_t), only when attended
+        self.private_history = []   # (t, observed_K, price_t), only when attended
         self.public_history = []    # (t, K_t, price_t), if disclosure is on
         self.utility_history = []   # realized u_i^t each round
+        self.action_history = []    # this agent's own realized action a_i^t each round,
+                                     # needed to reconstruct exact per-round counterfactual
+                                     # attendance (K_t - a_i^t + a') in metrics.empirical_regret
 
     def _history(self):
         return self.public_history if self.use_public_feedback else self.private_history
 
-    def observe(self, t, price, K_t, attended):
+    def observe(self, t, price, K_t, attended, subset_estimate=None):
         if attended:
-            self.private_history.append((t, K_t, price))
+            observed_K = subset_estimate if subset_estimate is not None else K_t
+            self.private_history.append((t, observed_K, price))
         if self.use_public_feedback:
             self.public_history.append((t, K_t, price))
+        self.action_history.append(int(attended))
         u = attended * (satisfaction(K_t, self.cfg) - price)
         self.utility_history.append(float(u))
 
@@ -138,18 +158,35 @@ class NoRegretAgent(BaseAgent):
         self._last_choice = choice
         return int(self.strategies[choice](hist))
 
-    def observe(self, t, price, K_t, attended):
+    def observe(self, t, price, K_t, attended, subset_estimate=None):
         # snapshot history BEFORE this round's outcome is appended, so
         # counterfactual strategies are evaluated on the same information
         # the agent actually had when it chose an action this round.
-        hist_before = list(self._history())
-        super().observe(t, price, K_t, attended)
+        #
+        # PERFORMANCE NOTE: this used to be `list(self._history())`, a
+        # full copy of the entire (ever-growing) history list every
+        # round -- O(t) per round, O(T^2) over a run, which dominated
+        # runtime at long horizons (e.g. no_regret x passive took ~8.5s
+        # at 10,000 rounds vs ~1.3s for heuristic x passive, despite the
+        # bar being trivial in both cases). Every strategy in
+        # _make_strategies only ever inspects h[-1] or h[-2:], so slicing
+        # to the last 2 entries is sufficient (len(h[-2:]) correctly
+        # proxies min(len(h), 2), which is all any strategy's `len(h)`
+        # check needs) and is O(1) instead of O(t). If a future strategy
+        # needs a longer lookback, this slice length must grow with it.
+        hist_before = self._history()[-2:]
+        super().observe(t, price, K_t, attended, subset_estimate=subset_estimate)
         if not self.use_public_feedback:
             return
-        rewards = np.array([
-            strat(hist_before) * (satisfaction(K_t, self.cfg) - price)
-            for strat in self.strategies
-        ])
+        # u_t does not depend on the strategy at all -- computing it once
+        # instead of once per strategy (as the previous version's list
+        # comprehension did, calling the numpy-based satisfaction()
+        # redundantly 5x per agent per round) was the dominant remaining
+        # cost at long horizons after the history-copy fix above (profiled
+        # at 10,000 rounds: satisfaction() alone accounted for ~1.5s of a
+        # ~7.2s run for a 10-agent no_regret population).
+        u_t = satisfaction(K_t, self.cfg) - price
+        rewards = np.array([strat(hist_before) * u_t for strat in self.strategies])
         span = rewards.max() - rewards.min()
         r_norm = (rewards - rewards.min()) / (span + 1e-9)
         self.weights *= np.exp(self.eta * r_norm)
@@ -191,8 +228,8 @@ class QLearningAgent(BaseAgent):
         self._last_state, self._last_price_idx, self._last_action = s, p_idx, a
         return a
 
-    def observe(self, t, price, K_t, attended):
-        super().observe(t, price, K_t, attended)
+    def observe(self, t, price, K_t, attended, subset_estimate=None):
+        super().observe(t, price, K_t, attended, subset_estimate=subset_estimate)
         reward = attended * (satisfaction(K_t, self.cfg) - price)
         s, p_idx, a = self._last_state, self._last_price_idx, self._last_action
         s_next = int(K_t)
