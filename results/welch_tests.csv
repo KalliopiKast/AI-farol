@@ -1,0 +1,7 @@
+description,metric,rounds,cell_a,mean_a,cell_b,mean_b,welch_t,p_value,significant_at_0.05
+highest profit in the grid (no_regret x q_learning-bar) vs. second-highest (heuristic x passive),profit,1000,no_regret/q_learning,39.555941999999995,heuristic/passive,22.421620000000004,11.923727972010333,1.0938233938249097e-21,True
+highest welfare in the grid (no_regret x q_learning-bar) vs. second-highest (bayesian x regression),welfare,1000,no_regret/q_learning,41.24244257329896,bayesian/regression,35.9383162472402,6.360330649057746,5.3664391914229014e-09,True
+heuristic x gp (near the top of the profit ranking) vs. bayesian x regression (near the bottom of profit but #2 welfare) -- sharpest profit/welfare divergence in the grid,profit,1000,heuristic/gp,21.971994000000006,bayesian/regression,7.331040714244234,33.835185380489406,2.426497461772422e-66,True
+"same pairing, welfare direction",welfare,1000,bayesian/regression,35.9383162472402,heuristic/gp,10.524337004283357,61.32412055994515,7.668507900496945e-95,True
+no_regret vs. q_learning attendance collapse under a passive bar,attendance,1000,no_regret/passive,0.08978999999999998,q_learning/passive,0.40992000000000006,-107.82799133402834,1.1688973817496704e-177,True
+no_regret vs. q_learning attendance recovery under the q_learning bar,attendance,1000,no_regret/q_learning,8.60886,q_learning/q_learning,4.7066300000000005,22.10849168100792,6.464720700071827e-49,True
